@@ -1,5 +1,5 @@
 // Offline support: serve the app shell from cache, refresh it in the background.
-const CACHE = 'meal-prep-v2';
+const CACHE = 'meal-prep-v3';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/store.js', 'js/foods.js', 'js/recipes.js', 'js/nutrition.js', 'js/planner.js', 'js/share.js', 'js/ai.js', 'js/chart.js',

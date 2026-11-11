@@ -180,7 +180,12 @@ nav.tabs a.on .ico { filter: none; opacity: 1; }
   background: var(--bg); border-radius: 18px 18px 0 0; padding: 8px 16px calc(20px + var(--safe-b));
   max-width: 680px; margin: 0 auto; animation: up .2s ease-out;
 }
-.sheet .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--line); margin: 4px auto 10px; }
+.sheet { overscroll-behavior: contain; }
+.sheet-bg { touch-action: none; }
+.sheet-top { position: sticky; top: -8px; z-index: 2; margin: -8px -16px 6px; padding: 10px 16px 8px; background: var(--bg); touch-action: none; cursor: grab; display: flex; justify-content: center; align-items: center; }
+.sheet .grab { width: 44px; height: 5px; border-radius: 3px; background: var(--muted); opacity: .5; }
+.sheet-x { position: absolute; right: 10px; top: 4px; width: 32px; height: 32px; min-height: 32px; padding: 0; border-radius: 50%; font-size: 14px; color: var(--text-2); background: var(--surface-2); border: 0; }
+.mode-toggle { margin: 4px 0 6px; }
 @keyframes up { from { transform: translateY(30px); opacity: .5; } }
 @keyframes fade { from { opacity: 0; } }
 

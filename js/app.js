@@ -54,7 +54,7 @@ function render() {
   const { parts, q } = parseHash();
   const route = parts.join('/');
   const keepScroll = route === lastRoute;
-  const y = window.scrollY;
+  const y = lockedY ?? window.scrollY;
   lastRoute = route;
 
   if (!state.profiles.length && parts[0] !== 'profile') { location.hash = '#/profile/new'; return; }
@@ -66,7 +66,7 @@ function render() {
       case undefined: html = viewToday(); tab = 'today'; break;
       case 'plan': html = viewPlan(); break;
       case 'prep': html = viewPrep(); break;
-      case 'cook': html = viewCook(p1 || today()); tab = 'prep'; break;
+      case 'cook': html = viewCook(p1 || today()); tab = 'plan'; break;
       case 'recipes': html = viewRecipes(); break;
       case 'recipe': html = viewRecipe(p1); tab = 'recipes'; break;
       case 'edit': html = viewEditor(p1, q); tab = 'recipes'; break;
@@ -85,9 +85,9 @@ function render() {
   bindCharts($app);
   if (p0 === 'recipes') renderRecipeList();
   if (p0 === 'cook') requestWakeLock(); else releaseWakeLock();
-  window.scrollTo(0, keepScroll ? y : 0);
+  if (lockedY === null) window.scrollTo(0, keepScroll ? y : 0);
 }
-window.addEventListener('hashchange', () => { ui.sheet = null; $sheet.innerHTML = ''; render(); });
+window.addEventListener('hashchange', () => { if (ui.sheet) closeSheet(false); render(); });
 const go = (h) => { if (location.hash === h) render(); else location.hash = h; };
 
 // ════════════════════════ shared bits ════════════════════════
@@ -190,10 +190,14 @@ function viewToday() {
 }
 
 // ════════════════════════ PLAN ════════════════════════
+function modeToggle(mode) {
+  return `<div class="seg mode-toggle" role="tablist"><button role="tab" class="${mode === 'plan' ? 'on' : ''}" data-act="mode" data-v="plan" aria-selected="${mode === 'plan'}">🗓️ Plan</button><button role="tab" class="${mode === 'cook' ? 'on' : ''}" data-act="mode" data-v="cook" aria-selected="${mode === 'cook'}">👩‍🍳 Cook</button></div>`;
+}
+
 function viewPlan() {
   const ws = ui.planWeek;
   const dates = weekDates(ws);
-  let html = `<h1>Meal plan</h1>${weekNav(ws, 'plan-week')}
+  let html = `${modeToggle('plan')}<h1>Meal plan</h1>${weekNav(ws, 'plan-week')}
     ${mealGrid()}
     <div class="row wrap" style="margin-top:10px"><button class="btn-primary" data-act="autofill">✨ Auto-fill empty meals</button><button data-act="share" data-kind="week" data-arg="${ws}">Share week</button><button class="btn-ghost btn-danger" data-act="clear-week">Clear</button></div>`;
   for (const d of dates) {
@@ -282,7 +286,7 @@ function sheetPortions(date, meal) {
   if (!sl) return '';
   const rs = slotRecipes(sl);
   let html = `<h3>Portions · ${MEAL_LABEL[meal]} · ${fmtDate(date)}</h3><p class="small sub">${rs.map((r) => esc(r.name)).join(' + ')}</p>
-    <p class="muted">1 serving = ${rs.map((r) => (r.unit ? `${r.unit[0]} ${r.unit[1]}` : '1 serving') + ' ' + esc(r.name.split(' ')[0].toLowerCase())).join(' + ')}</p>`;
+    <p class="muted">×1 = ${rs.map((r) => `${r.unit ? `${r.unit[0]} ${esc(r.unit[1])}` : '1 serving'} ${esc(r.name.toLowerCase())}`).join(' + ')}</p>`;
   for (const p of state.profiles) {
     const m = portionOf(sl, meal, p.id, date);
     const n = slotNutrition(sl, meal, p.id, date);
@@ -349,7 +353,10 @@ function viewCook(date) {
   const { insts, pre } = dayCooking(date);
   const checks = state.checks['cook:' + date] || {};
   const nb = nightBefore(addDays(date, 1));
-  let html = `<div class="row between"><button class="icon-btn" data-act="nav" data-h="#/cook/${addDays(date, -1)}" aria-label="Previous day">‹</button>
+  ui.cookDate = date;
+  const wk = weekDates(weekStart(date));
+  let html = `${modeToggle('cook')}<div class="chips" style="margin:8px 0 4px">${wk.map((d) => `<a class="chip ${d === date ? 'on' : ''}" href="#/cook/${d}" style="text-decoration:none">${DAY[dow(d)]} ${d.slice(8).replace(/^0/, '')}${d === today() ? ' •' : ''}</a>`).join('')}</div>
+    <div class="row between"><button class="icon-btn" data-act="nav" data-h="#/cook/${addDays(date, -1)}" aria-label="Previous day">‹</button>
     <div style="text-align:center"><h1 style="margin:0">Cook</h1><div class="sub">${fmtDate(date, true)}</div></div>
     <button class="icon-btn" data-act="nav" data-h="#/cook/${addDays(date, 1)}" aria-label="Next day">›</button></div>`;
   const left = MEALS.filter(({ k }) => slot(date, k)?.from && slot(date, k).dishes.length);
@@ -750,8 +757,62 @@ function profileFromForm(form, base) {
 }
 
 // ════════════════════════ sheets ════════════════════════
-function openSheet(kind, args = {}) { ui.sheet = { kind, ...args }; renderSheet(); }
-function closeSheet() { ui.sheet = null; $sheet.innerHTML = ''; render(); }
+// While a sheet is open the page behind is pinned in place (position: fixed is the only
+// reliable way on iOS Safari), so swipes on the sheet or the dimmed backdrop can't scroll it.
+let lockedY = null;
+function lockScroll() {
+  if (lockedY !== null) return;
+  lockedY = window.scrollY;
+  Object.assign(document.body.style, { position: 'fixed', top: `-${lockedY}px`, left: '0', right: '0', width: '100%' });
+}
+function unlockScroll() {
+  if (lockedY === null) return;
+  const y = lockedY;
+  lockedY = null;
+  Object.assign(document.body.style, { position: '', top: '', left: '', right: '', width: '' });
+  window.scrollTo(0, y);
+}
+function openSheet(kind, args = {}) { ui.sheet = { kind, ...args }; lockScroll(); renderSheet(); }
+function closeSheet(rerender = true) {
+  ui.sheet = null; $sheet.innerHTML = ''; unlockScroll();
+  if (rerender) render();
+}
+
+/** Drag the handle (or the sheet's header area) down to dismiss, like an iOS sheet. */
+function bindSheetDrag() {
+  const sheet = $sheet.querySelector('.sheet');
+  const handle = $sheet.querySelector('.sheet-top');
+  if (!sheet || !handle) return;
+  let startY = 0, dy = 0, t0 = 0, dragging = false;
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    dragging = true; startY = e.clientY; dy = 0; t0 = performance.now();
+    handle.setPointerCapture(e.pointerId);
+    sheet.style.transition = 'none';
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    dy = Math.max(0, e.clientY - startY);
+    sheet.style.transform = `translateY(${dy}px)`;
+    $sheet.querySelector('.sheet-bg').style.opacity = String(Math.max(0.2, 1 - dy / 400));
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    const fast = dy / Math.max(1, performance.now() - t0) > 0.6;
+    sheet.style.transition = 'transform .2s ease-out';
+    if (dy > 90 || (fast && dy > 30)) {
+      sheet.style.transform = 'translateY(100%)';
+      setTimeout(() => closeSheet(), 180);
+    } else {
+      sheet.style.transform = '';
+      $sheet.querySelector('.sheet-bg').style.opacity = '';
+    }
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ui.sheet) closeSheet(); });
 function renderSheet() {
   const s = ui.sheet;
   if (!s) { $sheet.innerHTML = ''; return; }
@@ -764,9 +825,11 @@ function renderSheet() {
   if (s.kind === 'prep-info') body = sheetPrepInfo(s);
   const scroller = $sheet.querySelector('.sheet');
   const y = scroller?.scrollTop || 0;
-  $sheet.innerHTML = `<div class="sheet-bg" data-act="sheet-close"></div><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${body}</div>`;
+  $sheet.innerHTML = `<div class="sheet-bg" data-act="sheet-close"></div><div class="sheet" role="dialog" aria-modal="true">
+    <div class="sheet-top"><div class="grab"></div><button class="sheet-x" data-act="sheet-close" aria-label="Close">✕</button></div>${body}</div>`;
   const ns = $sheet.querySelector('.sheet');
   if (ns && s.keepScroll) ns.scrollTop = y;
+  bindSheetDrag();
 }
 
 function sheetShare(s) {
@@ -915,6 +978,11 @@ const A = {
     const d = today();
     state.log[d] ||= {}; (state.log[d][s.pid] ||= []).push(e);
     save(); closeSheet(); toast('Logged');
+  },
+  mode: (d) => {
+    if (d.v === 'plan') { ui.planWeek = weekStart(ui.cookDate || today()); go('#/plan'); return; }
+    const wk = weekDates(ui.planWeek);
+    go('#/cook/' + (wk.includes(today()) ? today() : ui.cookDate && wk.includes(ui.cookDate) ? ui.cookDate : wk[0]));
   },
   'prep-info': (d) => openSheet('prep-info', { rid: d.rid, f: d.f, date: d.date }),
   grid: (d) => {
