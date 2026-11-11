@@ -2,6 +2,7 @@
 // Runs in the browser with the user's own API key (stored only on this device).
 import { FOODS, FOOD_LIST } from './foods.js';
 import { state, uid } from './store.js';
+import { enabledMeals, today } from './planner.js';
 import { targets, mealTarget, MEAL_LABEL } from './nutrition.js';
 
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.1.0/+esm';
@@ -43,7 +44,21 @@ const RECIPE_SCHEMA = {
         },
       },
     },
-    weekend_prep: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['task', 'minutes'], properties: { task: { type: 'string' }, minutes: { type: 'integer' } } } },
+    weekend_prep: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false,
+        required: ['task', 'minutes', 'food_ids', 'label', 'keeps_days', 'freezable'],
+        properties: {
+          task: { type: 'string' },
+          minutes: { type: 'integer' },
+          food_ids: { type: 'array', items: { type: 'string', enum: FOOD_IDS }, description: 'ingredients of this recipe that this task prepares' },
+          label: { type: 'string', description: 'how the prepped ingredient is called, 1–3 words, e.g. "marinated", "boiled chana", "masala base"' },
+          keeps_days: { type: 'integer', description: 'days it keeps in the fridge once done' },
+          freezable: { type: 'boolean' },
+        },
+      },
+    },
     night_before: { type: 'array', items: { type: 'string' } },
     before_cooking: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['task', 'minutes_before'], properties: { task: { type: 'string' }, minutes_before: { type: 'integer' } } } },
     steps: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['text', 'timer_minutes'], properties: { text: { type: 'string' }, timer_minutes: { type: 'integer', description: '0 if no timer' } } } },
@@ -133,7 +148,7 @@ function toRecipe(x) {
     ing: x.ingredients.map((i) => (i.food_id !== 'other' && FOODS[i.food_id]
       ? { f: i.food_id, g: i.grams, note: i.note || '' }
       : { name: i.name, g: i.grams, note: i.note || '', n: { kcal: i.kcal_100g, p: i.protein_100g, c: i.carbs_100g, f: i.fat_100g, fib: i.fibre_100g } })),
-    wkCustom: x.weekend_prep.map((w) => ({ t: w.task, m: w.minutes })),
+    wkCustom: x.weekend_prep.map((w) => ({ t: w.task, m: w.minutes, ing: w.food_ids, label: w.label, keeps: w.keeps_days, freeze: w.freezable })),
     nt: x.night_before,
     pre: x.before_cooking.map((p) => [p.task, p.minutes_before]),
     steps: x.steps.map((s) => (s.timer_minutes ? [s.text, s.timer_minutes] : s.text)),
@@ -143,14 +158,15 @@ function toRecipe(x) {
   };
 }
 
-export async function suggestRecipes({ meal, cuisine, have, notes, count = 3 }) {
-  const mt = state.profiles.map((p) => { const t = mealTarget(p, meal); return `${p.name} ≈ ${Math.round(t.kcal)} kcal / ${Math.round(t.p)} g protein`; }).join('; ');
+export async function suggestRecipes({ meal, diet = 'nonveg', cuisine, have, notes, count = 3 }) {
+  const mt = state.profiles.map((p) => { const t = mealTarget(p, meal, enabledMeals(today())); return `${p.name} ≈ ${Math.round(t.kcal)} kcal / ${Math.round(t.p)} g protein`; }).join('; ');
   const prompt = `Suggest ${count} different recipes for ${MEAL_LABEL[meal] || meal}${cuisine && cuisine !== 'Any' ? ` in ${cuisine} style` : ''}.
 Household:
 ${householdBrief()}
 Per-person targets for this meal: ${mt}. One recipe serving should land roughly at the average of these.
 ${have ? `Use these ingredients I already have where sensible: ${have}.` : ''}
 ${notes ? `Extra wishes: ${notes}` : ''}
+${diet === 'veg' ? 'This meal must be strictly vegetarian: no meat, fish or egg (dairy and paneer are fine).' : 'Non-vegetarian: build each recipe around chicken, fish, prawns or egg.'}
 Make the ${count} recipes clearly different from each other (protein source, cuisine, technique).`;
   return ask(prompt);
 }

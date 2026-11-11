@@ -2,6 +2,13 @@ import { RECIPES } from './recipes.js';
 
 const KEY = 'nutrition-dashboard.v1';
 
+// Which meals to plan on each weekday (0 = Sun) and whether each is veg or non-veg.
+// Default: 2 meals + snack (lunch, snack, dinner), all non-veg.
+export function defaultDayMeals() {
+  const day = () => ({ b: 'off', l: 'nonveg', s: 'nonveg', d: 'nonveg' });
+  return Object.fromEntries([0, 1, 2, 3, 4, 5, 6].map((i) => [i, day()]));
+}
+
 const blank = () => ({
   version: 1,
   profiles: [],
@@ -12,7 +19,7 @@ const blank = () => ({
   weights: {}, // { pid: [{ d:'YYYY-MM-DD', kg }] }
   checks: {}, // { 'grocery:WEEK': { key: true }, 'prep:WEEK': {...} }
   extras: {}, // { WEEK: ['item', ...] } extra grocery items
-  settings: { workdays: [1, 2, 3, 4, 5], apiKey: '', leftoverLunch: true },
+  settings: { workdays: [1, 2, 3, 4, 5], apiKey: '', leftoverLunch: true, dayMeals: defaultDayMeals() },
 });
 
 export let state = load();
@@ -20,7 +27,7 @@ export let state = load();
 function load() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { ...blank(), ...JSON.parse(raw), settings: { ...blank().settings, ...JSON.parse(raw).settings } };
+    if (raw) { const d = JSON.parse(raw); return { ...blank(), ...d, settings: { ...blank().settings, ...(d.settings || {}) } }; }
   } catch (e) { console.warn('load failed', e); }
   return blank();
 }

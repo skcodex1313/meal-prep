@@ -11,7 +11,9 @@ There's no build step: it's plain HTML/CSS/JS that GitHub Pages can serve as-is,
 | **Profiles** | One per person. Calorie and protein targets come from age, sex, height, weight, activity and goal (Mifflin-St Jeor, with a deficit of −250/−400/−550 kcal and 1.0–2.0 g protein per kg). You can override them by hand. |
 | **Recipes** | 57 built-in recipes (North and South Indian, Asian, soups, salads, breakfasts, snacks). No pork or beef. Add your own with nutrition worked out automatically from ingredients. |
 | **✨ Ask Claude** | Suggests 3 recipes that fit your targets and the ingredients you have, or turns any pasted recipe into the app's format. Needs your own Anthropic API key. |
+| **Meals per day** | A grid on the Plan screen: for each weekday choose which meals to plan (breakfast, lunch, snack, dinner) and whether each is 🍗 non-veg or 🥦 veg (no meat, fish or egg). The default is lunch + dinner + snack, all non-veg. Skipped meals' calories are spread over the others. |
 | **Plan** | A weekly planner with one-tap **auto-fill** (lunchbox-friendly on workdays, and dinner cooked extra for the next day's lunchbox). Portions are set per person automatically and can be adjusted. |
+| **Prepped vs fresh** | Every ingredient is tagged 🧺 *prepped* (masala base, sprouted, marinated, pre-chopped…) or 🛒 *fresh/pantry*. Tap a 🧺 tag to see exactly when to do it, e.g. soak Fri 9 pm → drain Sat 7 am → ready Sun, keeps 4 days, or freeze and thaw the night before. |
 | **Prep** | A **grocery list** grouped by aisle, a **weekend prep list** (batch tasks with quantities, e.g. masala base or marinades, merged across dishes) and a mid-week chopping top-up. |
 | **Cook mode** | Steps with tap-to-start timers, scaled quantities, "X min before" and "night before" tasks. Keeps the screen awake. |
 | **Tracking** | Tick meals as eaten, log extra food, see a 7-day calorie chart and a weight trend. |

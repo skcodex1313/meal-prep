@@ -2,7 +2,7 @@
 import { state, getRecipe, slot } from './store.js';
 import { MEALS, MEAL_LABEL, perServing, r0 } from './nutrition.js';
 import { TASKS } from './recipes.js';
-import { fmtDate, scaledIngredients, dayCooking, nightBefore, addDays, groceryList, prepPlan, portionOf, slotRecipes, DAY, dow } from './planner.js';
+import { fmtDate, scaledIngredients, dayCooking, nightBefore, addDays, groceryList, prepPlan, portionOf, slotRecipes, DAY, dow, ingredientPrep, prepName, nextPlannedDate, today } from './planner.js';
 
 const fmtMin = (m) => (m ? `${m} min` : '');
 
@@ -10,13 +10,19 @@ function portionLine(portions) {
   return state.profiles.filter((p) => portions[p.id]).map((p) => `${p.name} ×${portions[p.id]}`).join(', ');
 }
 
+const ingLine = (i, prep) => {
+  const v = i.f && prep.get(i.f);
+  return `• ${i.food.name}${i.note ? ` (${i.note})` : ''} – ${i.qty}${v ? ` _[prepped: ${prepName(v, i.f)}]_` : ''}`;
+};
+
 export function recipeText(r, servings, portions = {}) {
   const n = perServing(r);
   const lines = [`*${r.name}*`, `_${r.cuisine} · ${r.prep + r.cook} min active · makes ${+servings.toFixed(2)} servings_`];
   const pl = portionLine(portions);
   if (pl) lines.push(`Portions: ${pl}`);
   lines.push('', '*Ingredients*');
-  for (const i of scaledIngredients(r, servings)) lines.push(`• ${i.food.name}${i.note ? ` (${i.note})` : ''} – ${i.qty}`);
+  const prep = ingredientPrep(r, nextPlannedDate(r.id) || addDays(today(), 1));
+  for (const i of scaledIngredients(r, servings)) lines.push(ingLine(i, prep));
   const wk = [...(r.wk || []).map((k) => TASKS[k]?.t).filter(Boolean), ...(r.wkCustom || []).map((c) => c.t)];
   if (wk.length) { lines.push('', '*Prep ahead (weekend)*'); wk.forEach((t) => lines.push(`☐ ${t}`)); }
   if (r.nt?.length) { lines.push('', '*Night before*'); r.nt.forEach((t) => lines.push(`☐ ${t}`)); }
@@ -47,7 +53,8 @@ export function dayCookText(date) {
     lines.push('', `━━ *${MEAL_LABEL[k].toUpperCase()}* ━━`);
     for (const it of list) {
       lines.push('', `*${it.recipe.name}* – ${+it.servings.toFixed(2)} servings${it.leftovers.length ? ' _(includes tomorrow’s lunchbox)_' : ''}`);
-      for (const i of scaledIngredients(it.recipe, it.servings)) lines.push(`• ${i.food.name} – ${i.qty}`);
+      const prep = ingredientPrep(it.recipe, date);
+      for (const i of scaledIngredients(it.recipe, it.servings)) lines.push(ingLine(i, prep));
       (it.recipe.steps || []).forEach((s, n) => {
         const [t, m] = Array.isArray(s) ? s : [s, 0];
         lines.push(`${n + 1}. ${t}${m ? ` ⏱ ${m} min` : ''}`);
@@ -55,7 +62,7 @@ export function dayCookText(date) {
     }
     const sl = slot(date, k);
     if (sl) {
-      const portions = Object.fromEntries(state.profiles.map((p) => [p.id, portionOf(sl, k, p.id)]));
+      const portions = Object.fromEntries(state.profiles.map((p) => [p.id, portionOf(sl, k, p.id, date)]));
       const pl = portionLine(portions);
       if (pl) lines.push(`_Serve: ${pl}_`);
     }
@@ -81,14 +88,22 @@ export function groceryText(dates, checked = {}, extras = []) {
 }
 
 export function prepText(dates, checked = {}) {
-  const { tasks, midweek, minutes } = prepPlan(dates);
-  const lines = [`*Weekend prep – week of ${fmtDate(dates[0])}* (~${minutes} min)`];
-  tasks.filter((t) => !checked[t.key]).forEach((t) => {
+  const { weekend, midweek, minutes, sunday } = prepPlan(dates);
+  const lines = [`*Weekend prep – ${fmtDate(sunday)}* (~${minutes} min)`];
+  const task = (t) => {
     lines.push('', `☐ *${t.t}* (${fmtMin(t.m)})`);
+    if (t.startText) lines.push(`   ⏰ ${t.startText}`);
     if (t.amountText) lines.push(`   ${t.amountText}`);
     if (t.dishText) lines.push(`   _For: ${t.dishText}_`);
-  });
-  if (midweek) lines.push('', `☐ *${midweek.t}*`, `   ${midweek.amountText}`);
+    if (t.freezeText) lines.push(`   ❄️ ${t.freezeText}`);
+  };
+  weekend.filter((t) => !checked[t.gk]).forEach(task);
+  for (const day of midweek) {
+    const open = day.tasks.filter((t) => !checked[t.gk]);
+    if (!open.length) continue;
+    lines.push('', `*Mid-week – ${fmtDate(day.date)} evening*`);
+    open.forEach(task);
+  }
   return lines.join('\n');
 }
 

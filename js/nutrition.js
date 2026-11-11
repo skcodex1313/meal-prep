@@ -84,19 +84,41 @@ export function targets(p) {
   return { bmr: Math.round(bmr), tdee: Math.round(tdee), kcal, p: protein, f: fat, c: carbs, fib };
 }
 
-export function mealTarget(profile, meal) {
+/**
+ * Share of the day's targets for one meal. `enabled` = meals eaten that day; skipped meals'
+ * share is spread over the others so the day still adds up to the daily target.
+ */
+export function mealTarget(profile, meal, enabled = ['b', 'l', 's', 'd']) {
   const split = { ...DEFAULT_SPLIT, ...(profile.split || {}) };
+  const on = new Set([...enabled, meal]);
+  const total = [...on].reduce((s, k) => s + (split[k] || 0), 0) || 1;
   const t = targets(profile);
-  return { kcal: t.kcal * split[meal], p: t.p * split[meal] };
+  const share = split[meal] / total;
+  return { kcal: t.kcal * share, p: t.p * share };
 }
 
 /** Suggested portion multiplier (servings) for a person, given the dishes in a meal slot. */
-export function autoPortion(profile, meal, recipes) {
+export function autoPortion(profile, meal, recipes, enabled) {
   const kcal = recipes.reduce((s, r) => s + perServing(r).kcal, 0);
   if (!kcal) return 1;
-  const m = mealTarget(profile, meal).kcal / kcal;
+  const m = mealTarget(profile, meal, enabled).kcal / kcal;
   return Math.min(meal === 's' ? 2 : 2.5, Math.max(0.5, Math.round(m * 4) / 4));
 }
+
+// ───────── Veg / non-veg ─────────
+const EGGS = new Set(['egg', 'egg_white']);
+/** 'nonveg' (chicken/fish), 'egg', or 'veg' – worked out from the ingredients. */
+export function dietOf(recipe) {
+  let egg = false;
+  for (const raw of recipe.ing || []) {
+    const i = normIng(raw);
+    if (!i.f) continue;
+    if (EGGS.has(i.f)) egg = true;
+    else if (FOODS[i.f]?.cat === 'meat') return 'nonveg';
+  }
+  return egg ? 'egg' : 'veg';
+}
+export const DIET_ICON = { veg: '🥦', egg: '🥚', nonveg: '🍗' };
 
 // ───────── Quantity formatting ─────────
 const FRAC = { 0.25: '¼', 0.5: '½', 0.75: '¾', 0.33: '⅓', 0.67: '⅔' };

@@ -1,10 +1,10 @@
-import { state, save, getRecipe, allRecipes, upsertRecipe, deleteRecipe, profileById, uid, slot, exportData, replaceState, resetRecipeIndex } from './store.js';
+import { state, save, getRecipe, allRecipes, upsertRecipe, deleteRecipe, profileById, uid, slot, exportData, replaceState, resetRecipeIndex, defaultDayMeals } from './store.js';
 import { FOODS, FOOD_LIST } from './foods.js';
 import { TASKS } from './recipes.js';
-import { MEALS, MEAL_LABEL, ACTIVITY, GOALS, DEFAULT_SPLIT, targets, perServing, autoPortion, mealTarget, normIng, ingFood, fmtQty, r0, invalidateNutrition, bmi } from './nutrition.js';
+import { MEALS, MEAL_LABEL, ACTIVITY, GOALS, DEFAULT_SPLIT, targets, perServing, autoPortion, mealTarget, normIng, ingFood, fmtQty, r0, invalidateNutrition, bmi, dietOf, DIET_ICON } from './nutrition.js';
 import {
   today, addDays, weekStart, weekDates, fmtDate, isWorkday, dow, DAY, slotRecipes, portionOf, slotNutrition, dayIntake,
-  groceryList, prepPlan, dayCooking, nightBefore, scaledIngredients, autoFill,
+  groceryList, prepPlan, dayCooking, nightBefore, scaledIngredients, autoFill, mealSetting, enabledMeals, ingredientPrep, prepName, nextPlannedDate,
 } from './planner.js';
 import { recipeText, dayCookText, groceryText, prepText, weekPlanText, waLink } from './share.js';
 import { lineChart, barChart, bindCharts } from './chart.js';
@@ -31,14 +31,14 @@ function toast(msg, ms = 2200) {
 }
 
 const ui = {
-  rf: { meal: 'all', cuisine: 'all', tag: 'all', q: '' },
+  rf: { meal: 'all', cuisine: 'all', tag: 'all', diet: 'all', q: '' },
   prepTab: 'grocery',
   meProfile: null,
   planWeek: weekStart(),
   prepWeek: [5, 6, 0].includes(new Date().getDay()) ? addDays(weekStart(), 7) : weekStart(),
   recipePortions: {},
   draft: null,
-  ai: { meal: 'l', cuisine: 'Any', have: '', notes: '', loading: false, results: [], error: '', importText: '' },
+  ai: { meal: 'l', diet: 'nonveg', cuisine: 'Any', have: '', notes: '', loading: false, results: [], error: '', importText: '' },
   sheet: null,
 };
 
@@ -87,7 +87,7 @@ function render() {
   if (p0 === 'cook') requestWakeLock(); else releaseWakeLock();
   window.scrollTo(0, keepScroll ? y : 0);
 }
-window.addEventListener('hashchange', render);
+window.addEventListener('hashchange', () => { ui.sheet = null; $sheet.innerHTML = ''; render(); });
 const go = (h) => { if (location.hash === h) render(); else location.hash = h; };
 
 // ════════════════════════ shared bits ════════════════════════
@@ -151,7 +151,7 @@ function viewToday() {
     const ws = addDays(weekStart(), 7);
     const pp = prepPlan(weekDates(ws));
     html += `<a class="card accent row between" href="#/prep" data-act="prep-week" data-ws="${ws}" style="text-decoration:none;color:inherit;margin-top:10px">
-      <div><b>🧺 Weekend prep for next week</b><div class="small sub">${pp.tasks.length ? `${plural(pp.tasks.length, 'task')} · about ${pp.minutes} min` : 'Plan next week first to get your prep list'}</div></div><span>›</span></a>`;
+      <div><b>🧺 Weekend prep for next week</b><div class="small sub">${pp.weekend.length ? `${plural(pp.weekend.length, 'task')} · about ${pp.minutes} min` : 'Plan next week first to get your prep list'}</div></div><span>›</span></a>`;
   }
 
   html += `<div class="row between"><h2>Meals</h2>${hasPlan ? `<a class="btn btn-sm btn-primary" href="#/cook/${d}">👩‍🍳 Cook mode</a>` : ''}</div>`;
@@ -165,9 +165,9 @@ function viewToday() {
       html += `<div class="card"><div class="row between"><b>${icon} ${label}</b>${sl.from ? '<span class="tag green">leftovers – just pack</span>' : ''}</div>
         <p class="small">${names}</p><div class="row wrap">`;
       for (const p of state.profiles) {
-        const n = slotNutrition(sl, k, p.id);
+        const n = slotNutrition(sl, k, p.id, d);
         const on = !!sl.eaten?.[p.id];
-        html += `<button class="chip ${on ? 'on' : ''}" data-act="eat" data-date="${d}" data-meal="${k}" data-pid="${p.id}">${on ? '✓' : '○'} ${esc(p.name)} ${mult(portionOf(sl, k, p.id))} · ${fmt(n.kcal)} kcal · ${r0(n.p)} g P</button>`;
+        html += `<button class="chip ${on ? 'on' : ''}" data-act="eat" data-date="${d}" data-meal="${k}" data-pid="${p.id}">${on ? '✓' : '○'} ${esc(p.name)} ${mult(portionOf(sl, k, p.id, d))} · ${fmt(n.kcal)} kcal · ${r0(n.p)} g P</button>`;
       }
       html += '</div></div>';
     }
@@ -194,7 +194,8 @@ function viewPlan() {
   const ws = ui.planWeek;
   const dates = weekDates(ws);
   let html = `<h1>Meal plan</h1>${weekNav(ws, 'plan-week')}
-    <div class="row wrap"><button class="btn-primary" data-act="autofill">✨ Auto-fill empty meals</button><button data-act="share" data-kind="week" data-arg="${ws}">Share week</button><button class="btn-ghost btn-danger" data-act="clear-week">Clear</button></div>`;
+    ${mealGrid()}
+    <div class="row wrap" style="margin-top:10px"><button class="btn-primary" data-act="autofill">✨ Auto-fill empty meals</button><button data-act="share" data-kind="week" data-arg="${ws}">Share week</button><button class="btn-ghost btn-danger" data-act="clear-week">Clear</button></div>`;
   for (const d of dates) {
     const work = isWorkday(d);
     html += `<div class="card day" style="margin-top:12px"><div class="day-head"><b class="${d === today() ? 'today' : ''}">${fmtDate(d)}${d === today() ? ' · today' : ''}</b>
@@ -202,14 +203,21 @@ function viewPlan() {
     for (const { k, label } of MEALS) {
       const sl = slot(d, k);
       const rs = slotRecipes(sl);
-      html += `<div class="slot"><div class="slot-label">${label}</div><div>`;
-      html += rs.map((r, i) => `<span class="dish"><span data-act="nav" data-h="#/recipe/${r.id}">${esc(r.name)}</span><button data-act="rm-dish" data-date="${d}" data-meal="${k}" data-i="${i}" aria-label="Remove ${esc(r.name)}">×</button></span>`).join('');
+      const set = mealSetting(d, k);
+      if (set === 'off' && !rs.length) {
+        html += `<div class="slot skipped"><div class="slot-label">${label}</div><div class="row between"><span class="muted">skipped</span><button class="btn-ghost btn-sm" data-act="add-dish" data-date="${d}" data-meal="${k}">+ add anyway</button></div></div>`;
+        continue;
+      }
+      const mismatch = set === 'veg' && rs.some((r) => dietOf(r) !== 'veg');
+      html += `<div class="slot"><div class="slot-label">${label}<br><span title="${set === 'veg' ? 'Veg' : set === 'nonveg' ? 'Non-veg' : 'Extra'}">${set === 'off' ? '➕' : DIET_ICON[set]}</span></div><div>`;
+      html += rs.map((r, i) => `<span class="dish"><span data-act="nav" data-h="#/recipe/${r.id}">${DIET_ICON[dietOf(r)]} ${esc(r.name)}</span><button data-act="rm-dish" data-date="${d}" data-meal="${k}" data-i="${i}" aria-label="Remove ${esc(r.name)}">×</button></span>`).join('');
       html += `<button class="btn-sm" data-act="add-dish" data-date="${d}" data-meal="${k}">+ Add</button>`;
       const prev = slot(addDays(d, -1), 'd');
       if (k === 'l' && !rs.length && prev?.dishes?.length && !prev.from) html += ` <button class="btn-sm btn-ghost" data-act="leftover" data-date="${d}">↺ Last night’s leftovers</button>`;
       if (sl?.from) html += ` <span class="tag green">leftovers from ${DAY[dow(sl.from)]} dinner</span>`;
+      if (mismatch) html += ` <span class="tag warn">non-veg dish on a veg meal</span>`;
       if (rs.length) {
-        html += `<div class="portions">${state.profiles.map((p) => `<button data-act="portions" data-date="${d}" data-meal="${k}">${pDot(p)} ${esc(p.name)} ${mult(portionOf(sl, k, p.id))}</button>`).join('')}</div>`;
+        html += `<div class="portions">${state.profiles.map((p) => `<button data-act="portions" data-date="${d}" data-meal="${k}">${pDot(p)} ${esc(p.name)} ${mult(portionOf(sl, k, p.id, d))}</button>`).join('')}</div>`;
       }
       html += `</div></div>`;
     }
@@ -225,6 +233,20 @@ function viewPlan() {
   return html;
 }
 
+const CYCLE = { off: 'nonveg', nonveg: 'veg', veg: 'off' };
+const CELL = { off: '—', nonveg: '🍗', veg: '🥦' };
+function mealGrid() {
+  const dm = state.settings.dayMeals || defaultDayMeals();
+  const days = [1, 2, 3, 4, 5, 6, 0];
+  const count = (i) => ['b', 'l', 'd'].filter((k) => dm[i]?.[k] !== 'off').length;
+  const summary = [...new Set(days.map((i) => `${count(i)} meals${dm[i]?.s !== 'off' ? ' + snack' : ''}`))].join(' / ');
+  return `<details class="card tight" ${ui.gridOpen ? 'open' : ''} data-toggle="grid"><summary><b>Meals per day</b> · ${esc(summary)}</summary>
+    <p class="muted" style="margin:4px 0 8px">Tap a cell to cycle: 🍗 non-veg → 🥦 veg → — skip. Auto-fill and portions follow this. Veg means no meat, fish or egg.</p>
+    <table class="tbl meal-grid"><tr><th></th>${['Bkfst', 'Lunch', 'Snack', 'Dinner'].map((l) => `<th>${l}</th>`).join('')}</tr>
+    ${days.map((i) => `<tr><td>${DAY[i]}</td>${MEALS.map(({ k }) => { const v = dm[i]?.[k] || 'off'; return `<td><button class="cell ${v}" data-act="grid" data-day="${i}" data-meal="${k}" aria-label="${DAY[i]} ${MEAL_LABEL[k]}: ${v}">${CELL[v]}</button></td>`; }).join('')}</tr>`).join('')}</table>
+    <div class="row wrap" style="margin-top:8px"><button class="btn-sm" data-act="grid-preset" data-v="2s">2 meals + snack</button><button class="btn-sm" data-act="grid-preset" data-v="3s">3 meals + snack</button><button class="btn-sm" data-act="grid-preset" data-v="allnv">All non-veg</button></div></details>`;
+}
+
 function sheetAddDish(date, meal) {
   const s = ui.sheet;
   const work = isWorkday(date) && meal === 'l';
@@ -232,7 +254,12 @@ function sheetAddDish(date, meal) {
   let list = allRecipes().filter((r) => (s.all ? true : r.meals?.includes(meal)));
   if (q) list = list.filter((r) => (r.name + ' ' + r.cuisine + ' ' + r.cat).toLowerCase().includes(q));
   if (work && s.lunchbox !== false) list = list.filter((r) => r.lunchbox);
-  list.sort((a, b) => (state.favorites.includes(b.id) - state.favorites.includes(a.id)) || (perServing(b).p / perServing(b).kcal) - (perServing(a).p / perServing(a).kcal));
+  const set = mealSetting(date, meal);
+  s.diet ??= set === 'veg' ? 'veg' : 'any';
+  if (s.diet === 'veg') list = list.filter((r) => dietOf(r) === 'veg');
+  if (s.diet === 'nonveg') list = list.filter((r) => dietOf(r) !== 'veg');
+  const nvFirst = (r) => (set === 'nonveg' && dietOf(r) !== 'veg' ? 1 : 0);
+  list.sort((a, b) => (state.favorites.includes(b.id) - state.favorites.includes(a.id)) || (nvFirst(b) - nvFirst(a)) || (perServing(b).p / perServing(b).kcal) - (perServing(a).p / perServing(a).kcal));
   const cur = slot(date, meal)?.dishes || [];
   return `<h3>Add to ${MEAL_LABEL[meal]} · ${fmtDate(date)}</h3>
     <input type="search" placeholder="Search recipes…" value="${esc(s.q || '')}" data-input="sheet-q" autocomplete="off">
@@ -241,9 +268,10 @@ function sheetAddDish(date, meal) {
       <button class="chip ${s.all ? 'on' : ''}" data-act="sheet-set" data-k="all" data-v="1">All dishes</button>
       ${work ? `<button class="chip ${s.lunchbox !== false ? 'on' : ''}" data-act="sheet-set" data-k="lunchbox" data-v="${s.lunchbox === false ? '1' : ''}">🍱 Lunchbox only</button>` : ''}
     </div>
+    <div class="chips">${[['any', 'Veg + non-veg'], ['nonveg', '🍗 Non-veg'], ['veg', '🥦 Veg only']].map(([k, l]) => `<button class="chip ${s.diet === k ? 'on' : ''}" data-act="sheet-set" data-k="diet" data-v="${k}">${l}</button>`).join('')}</div>
     <ul class="list" id="sheet-list">${list.map((r) => {
       const n = perServing(r), added = cur.includes(r.id);
-      return `<li class="row"><span style="font-size:22px">${emoji(r)}</span><div class="grow"><div>${esc(r.name)}</div><div class="macros">${macroLine(n)} /serving · ${active(r)} min${r.lunchbox ? ' · 🍱' : ''}</div></div>
+      return `<li class="row"><span style="font-size:22px">${emoji(r)}</span><div class="grow"><div>${DIET_ICON[dietOf(r)]} ${esc(r.name)}</div><div class="macros">${macroLine(n)} /serving · ${active(r)} min${r.lunchbox ? ' · 🍱' : ''}</div></div>
         <button class="btn-sm ${added ? '' : 'btn-primary'}" data-act="pick-dish" data-date="${date}" data-meal="${meal}" data-id="${r.id}">${added ? 'Added ✓' : 'Add'}</button></li>`;
     }).join('') || '<li class="muted">No matches.</li>'}</ul>
     <button class="btn-block" data-act="sheet-close" style="margin-top:10px">Done</button>`;
@@ -256,9 +284,9 @@ function sheetPortions(date, meal) {
   let html = `<h3>Portions · ${MEAL_LABEL[meal]} · ${fmtDate(date)}</h3><p class="small sub">${rs.map((r) => esc(r.name)).join(' + ')}</p>
     <p class="muted">1 serving = ${rs.map((r) => (r.unit ? `${r.unit[0]} ${r.unit[1]}` : '1 serving') + ' ' + esc(r.name.split(' ')[0].toLowerCase())).join(' + ')}</p>`;
   for (const p of state.profiles) {
-    const m = portionOf(sl, meal, p.id);
-    const n = slotNutrition(sl, meal, p.id);
-    const mt = mealTarget(p, meal);
+    const m = portionOf(sl, meal, p.id, date);
+    const n = slotNutrition(sl, meal, p.id, date);
+    const mt = mealTarget(p, meal, enabledMeals(date));
     const isAuto = sl.portions?.[p.id] == null;
     html += `<div class="card"><div class="row between"><div class="row">${pDot(p)}<b>${esc(p.name)}</b>${isAuto ? '<span class="tag">auto</span>' : ''}</div>
       <div class="stepper"><button data-act="portion-step" data-date="${date}" data-meal="${meal}" data-pid="${p.id}" data-d="-0.25" aria-label="Less">−</button><span class="v">${mult(m)}</span><button data-act="portion-step" data-date="${date}" data-meal="${meal}" data-pid="${p.id}" data-d="0.25" aria-label="More">+</button></div></div>
@@ -285,18 +313,20 @@ function viewPrep() {
     const done = groups.reduce((s, g) => s + g.items.filter((i) => checks[i.key]).length, 0) + extras.filter((e) => checks['x:' + e]).length;
     html += `<p class="sub" style="margin-top:12px">${done}/${total} items in the basket. Quantities include every portion in the plan.</p>`;
     for (const g of groups) {
-      html += `<h2>${g.label}</h2><div class="card tight"><ul class="list">${g.items.map((i) => checkRow('grocery', ws, i.key, `<b>${esc(i.food.name)}</b> <span class="sub">– ${esc(i.qty)}</span>`, [...i.dishes].join(', '))).join('')}</ul></div>`;
+      html += `<h2>${g.label}</h2><div class="card tight"><ul class="list">${g.items.map((i) => checkRow('grocery', ws, i.key, `<b>${esc(i.food.name)}</b> <span class="sub">– ${esc(i.qty)}</span>${i.prep.size ? ` <span class="ptag prepped" style="cursor:default">🧺 ${esc([...i.prep].join(', '))}</span>` : ''}`, esc([...i.dishes].join(', ')))).join('')}</ul></div>`;
     }
     html += `<h2>Also buy</h2><div class="card tight"><ul class="list">${extras.map((e, idx) => checkRow('grocery', ws, 'x:' + e, esc(e), '', `<button class="btn-ghost btn-sm btn-danger" data-act="extra-del" data-ws="${ws}" data-i="${idx}" aria-label="Remove">✕</button>`)).join('')}
       <li><form class="row" data-submit="extra-add" data-ws="${ws}"><input name="item" placeholder="e.g. tea, dish soap" autocomplete="off"><button class="btn-sm">Add</button></form></li></ul></div>`;
     if (pantry.length) html += `<details class="card tight" style="margin-top:10px"><summary>Pantry check (${pantry.length} staples)</summary><ul class="list">${pantry.map((i) => checkRow('grocery', ws, i.key, esc(i.food.name), esc(i.qty) + ' this week')).join('')}</ul></details>`;
     html += shareButtons('grocery', ws);
   } else if (ui.prepTab === 'prep') {
-    const checks = state.checks['prep:' + ws] || {};
-    const { tasks, midweek, minutes } = prepPlan(dates);
-    html += `<div class="card accent" style="margin-top:12px"><b>About ${minutes} min of weekend prep</b><p class="small">Do it on ${fmtDate(addDays(ws, -2))} or ${fmtDate(addDays(ws, -1))}. Then weekday cooking fits in 15–20 min a meal. Tasks are grouped across dishes, so each one is done once.</p></div>`;
-    html += `<div class="card tight" style="margin-top:10px"><ul class="list">${tasks.map((t) => checkRow('prep', ws, t.key, `<b>${esc(t.t)}</b> <span class="tag">${t.m} min</span>`, [t.amountText && '📦 ' + t.amountText, t.dishText && 'For: ' + t.dishText].filter(Boolean).map(esc).join('<br>'))).join('')}</ul></div>`;
-    if (midweek) html += `<h2>Mid-week top-up</h2><div class="card tight"><ul class="list">${checkRow('prep', ws, midweek.key, `<b>${esc(midweek.t)}</b> <span class="tag">${midweek.m} min</span>`, esc('📦 ' + midweek.amountText))}</ul></div>`;
+    const { weekend, midweek, minutes, sunday } = prepPlan(dates);
+    const row = (t) => checkRow('prep', ws, t.gk, `<b>${esc(t.t)}</b> <span class="tag">${t.m} min</span>`,
+      [t.startText && '⏰ ' + t.startText, t.amountText && '📦 ' + t.amountText, t.dishText && 'For: ' + t.dishText, t.freezeText && '❄️ ' + t.freezeText].filter(Boolean).map(esc).join('<br>'));
+    html += `<div class="card accent" style="margin-top:12px"><b>Sunday prep (${fmtDate(sunday)}) · about ${minutes} min</b><p class="small">Weekday cooking then fits in 15–20 min a meal. Each task is done once for all the dishes that need it. ⏰ marks tasks that need starting earlier (soaking, sprouting).</p></div>`;
+    html += weekend.length ? `<div class="card tight" style="margin-top:10px"><ul class="list">${weekend.map(row).join('')}</ul></div>` : '<p class="muted">Nothing to prep ahead.</p>';
+    if (midweek.length) html += `<h2>Mid-week prep</h2><p class="small sub" style="margin-top:-4px">These don’t keep or freeze well, so they’re done closer to the day.</p>`;
+    for (const day of midweek) html += `<h3 style="margin-top:14px">${fmtDate(day.date)}</h3><div class="card tight"><ul class="list">${day.tasks.map(row).join('')}</ul></div>`;
     html += shareButtons('prep', ws);
   } else {
     html += `<div class="card tight" style="margin-top:12px"><ul class="list">${dates.map((d) => {
@@ -339,12 +369,12 @@ function viewCook(date) {
     if (!list.length) continue;
     const sl = slot(date, k);
     html += `<h2>${icon} ${label}</h2>`;
-    if (sl) html += `<p class="small sub">Serve: ${state.profiles.map((p) => `${esc(p.name)} ${mult(portionOf(sl, k, p.id))}`).join(' · ')}</p>`;
+    if (sl) html += `<p class="small sub">Serve: ${state.profiles.map((p) => `${esc(p.name)} ${mult(portionOf(sl, k, p.id, date))}`).join(' · ')}</p>`;
     for (const it of list) {
       const r = it.recipe;
       html += `<div class="card"><div class="row between"><h3 style="margin:0"><a href="#/recipe/${r.id}" style="color:inherit">${esc(r.name)}</a></h3><span class="tag">${active(r)} min</span></div>
         <p class="small sub">Cook <b>${+it.servings.toFixed(2)} servings</b>${it.leftovers.length ? ` <span class="tag green">incl. ${it.leftovers.map((l) => `${DAY[dow(l.date)]} ${MEAL_LABEL[l.meal].toLowerCase()}`).join(', ')}</span>` : ''}</p>
-        <details open><summary>Ingredients</summary><ul class="list small">${scaledIngredients(r, it.servings).map((i) => `<li class="row between"><span>${esc(i.food.name)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ''}</span><b class="nowrap">${esc(i.qty)}</b></li>`).join('')}</ul></details>
+        <details open><summary>Ingredients</summary>${ingList(r, it.servings, date, true)}</details>
         <div style="margin-top:6px">${(r.steps || []).map((s, n) => {
           const [t, m] = Array.isArray(s) ? s : [s, 0];
           const key = `${k}|${r.id}|${n}`;
@@ -357,6 +387,40 @@ function viewCook(date) {
   return html;
 }
 
+// ════════════════════════ INGREDIENT LISTS ════════════════════════
+/** Ingredient rows labelled 🧺 prepped (tap for timing) or 🛒 fresh from the grocery list / pantry. */
+function ingList(r, servings, date, small = false) {
+  const prep = ingredientPrep(r, date);
+  return `<ul class="list ${small ? 'small' : ''}">${scaledIngredients(r, servings).map((i) => {
+    const v = i.f && prep.get(i.f);
+    const tag = v
+      ? `<button class="ptag prepped" data-act="prep-info" data-rid="${r.id}" data-f="${i.f}" data-date="${date}">🧺 ${esc(prepName(v, i.f))} ›</button>`
+      : `<span class="ptag fresh">🛒 ${i.food.pantry ? 'pantry' : 'fresh'}</span>`;
+    return `<li class="row between" style="align-items:flex-start"><div class="grow"><div>${esc(i.food.name)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ''}</div>${tag}</div><b class="nowrap">${esc(i.qty)}</b></li>`;
+  }).join('')}</ul>`;
+}
+
+function sheetPrepInfo(s) {
+  const r = getRecipe(s.rid);
+  const v = ingredientPrep(r, s.date).get(s.f);
+  if (!v) return '<p>No prep needed.</p>';
+  const sc = v.sched;
+  const modeText = {
+    weekend: `Made in Sunday’s prep and kept in the fridge (keeps ${v.keeps} day${v.keeps > 1 ? 's' : ''}).`,
+    freeze: `Cooking day is more than ${v.keeps} day${v.keeps > 1 ? 's' : ''} after Sunday, so make it on Sunday and freeze it.`,
+    midweek: `Keeps only ${v.keeps} day${v.keeps > 1 ? 's' : ''} and doesn’t freeze well, so make it closer to the day.`,
+  }[sc.mode];
+  const t = TASKS[v.key];
+  return `<h3>🧺 ${esc(prepName(v, s.f))}</h3>
+    <p class="small sub">For <b>${esc(r.name)}</b> · cooking on <b>${fmtDate(s.date, true)}</b></p>
+    <div class="card accent tight small">${modeText}</div>
+    <ol class="timeline">${sc.steps.map((st) => `<li><div class="when">${fmtDate(st.date)}${st.time ? ` · ${esc(st.time)}` : ''}</div><div>${esc(st.t)}</div></li>`).join('')}
+      <li><div class="when">${fmtDate(s.date)}</div><div>Use it in ${esc(r.name)} 🍳</div></li></ol>
+    ${sc.until ? `<p class="muted">Use by ${fmtDate(sc.until)}.</p>` : ''}
+    ${t ? `<p class="muted">Hands-on time ~${t.m} min. It also covers other dishes that use it this week (see Prep → Weekend prep).</p>` : ''}
+    <button class="btn-block" data-act="sheet-close" style="margin-top:8px">Close</button>`;
+}
+
 // ════════════════════════ RECIPES ════════════════════════
 function viewRecipes() {
   const f = ui.rf;
@@ -366,6 +430,7 @@ function viewRecipes() {
     <div class="chips">${chip('meal', 'all', 'All meals')}${chip('meal', 'b', 'Breakfast')}${chip('meal', 'l', 'Lunch')}${chip('meal', 'd', 'Dinner')}${chip('meal', 's', 'Snack')}</div>
     <div class="chips">${chip('cuisine', 'all', 'Any cuisine')}${chip('cuisine', 'North Indian', 'North Indian')}${chip('cuisine', 'South Indian', 'South Indian')}${chip('cuisine', 'Indian', 'Indian')}${chip('cuisine', 'Asian', 'Asian')}${chip('cuisine', 'Continental', 'Continental')}</div>
     <div class="chips">${chip('tag', 'all', 'Everything')}${chip('tag', 'lunchbox', '🍱 Lunchbox')}${chip('tag', 'protein', '💪 30 g+ protein')}${chip('tag', 'soup', '🥣 Soups')}${chip('tag', 'salad', '🥗 Salads')}${chip('tag', 'fav', '⭐ Favourites')}${chip('tag', 'mine', '✍️ Mine')}</div>
+    <div class="chips">${chip('diet', 'all', 'Veg + non-veg')}${chip('diet', 'nonveg', '🍗 Non-veg')}${chip('diet', 'veg', '🥦 Veg')}</div>
     <div id="rlist"></div>`;
 }
 
@@ -382,6 +447,8 @@ function renderRecipeList() {
     if (f.tag === 'salad' && r.cat !== 'salad') return false;
     if (f.tag === 'fav' && !state.favorites.includes(r.id)) return false;
     if (f.tag === 'mine' && !r.custom) return false;
+    if (f.diet === 'veg' && dietOf(r) !== 'veg') return false;
+    if (f.diet === 'nonveg' && dietOf(r) === 'veg') return false;
     if (q && !(r.name + ' ' + r.cuisine + ' ' + (r.ing || []).map((i) => ingFood(normIng(i)).name).join(' ')).toLowerCase().includes(q)) return false;
     return true;
   });
@@ -389,7 +456,7 @@ function renderRecipeList() {
     ? list.map((r) => {
       const n = perServing(r);
       return `<a class="card rcard" href="#/recipe/${r.id}" style="text-decoration:none;color:inherit"><div class="emoji">${emoji(r)}</div><div class="grow"><h3>${esc(r.name)}${state.favorites.includes(r.id) ? ' ⭐' : ''}</h3>
-        <div class="macros">${macroLine(n)} · ${active(r)} min</div><div class="muted">${esc(r.cuisine)}${r.lunchbox ? ' · 🍱 lunchbox' : ''}${r.custom ? ' · mine' : ''}</div></div><span class="muted">›</span></a>`;
+        <div class="macros">${macroLine(n)} · ${active(r)} min</div><div class="muted">${DIET_ICON[dietOf(r)]} ${esc(r.cuisine)}${r.lunchbox ? ' · 🍱 lunchbox' : ''}${r.custom ? ' · mine' : ''}</div></div><span class="muted">›</span></a>`;
     }).join('')
     : `<div class="empty"><p>No recipes match.</p></div>`;
 }
@@ -401,7 +468,7 @@ function recipePortions(r) {
   const meal = r.meals?.includes('l') ? 'l' : r.meals?.[0] || 'l';
   const pp = {};
   const combo = withPair(r);
-  for (const p of state.profiles) pp[p.id] = ['side', 'snack'].includes(r.cat) ? 1 : autoPortion(p, meal, combo);
+  for (const p of state.profiles) pp[p.id] = ['side', 'snack'].includes(r.cat) ? 1 : autoPortion(p, meal, combo, enabledMeals(today()));
   return (ui.recipePortions[r.id] = pp);
 }
 
@@ -413,7 +480,7 @@ function viewRecipe(id) {
   const total = Object.values(pp).reduce((a, b) => a + b, 0);
   const fav = state.favorites.includes(r.id);
   let html = `<div class="row between"><a class="btn-ghost" href="#/recipes">‹ Recipes</a><button class="btn-ghost" data-act="fav" data-id="${r.id}" aria-label="Favourite">${fav ? '⭐' : '☆'}</button></div>
-    <h1>${esc(r.name)}</h1><div class="row wrap"><span class="tag">${esc(r.cuisine)}</span><span class="tag">${esc(r.cat)}</span><span class="tag">⏱ ${r.prep} + ${r.cook} min</span>${r.lunchbox ? '<span class="tag green">🍱 lunchbox</span>' : ''}${r.custom ? '<span class="tag">mine</span>' : ''}</div>
+    <h1>${esc(r.name)}</h1><div class="row wrap"><span class="tag">${DIET_ICON[dietOf(r)]} ${{ veg: 'veg', egg: 'egg', nonveg: 'non-veg' }[dietOf(r)]}</span><span class="tag">${esc(r.cuisine)}</span><span class="tag">${esc(r.cat)}</span><span class="tag">⏱ ${r.prep} + ${r.cook} min</span>${r.lunchbox ? '<span class="tag green">🍱 lunchbox</span>' : ''}${r.custom ? '<span class="tag">mine</span>' : ''}</div>
     ${r.why ? `<p class="small sub">${esc(r.why)}</p>` : ''}
     <div class="card" style="margin-top:12px"><div class="muted">Per serving${r.unit ? ` (${r.unit[0]} ${esc(r.unit[1])})` : ''}</div>
       <div class="stats" style="margin-top:6px"><div class="stat"><b>${fmt(n.kcal)}</b><span>kcal</span></div><div class="stat"><b>${r0(n.p)} g</b><span>protein</span></div><div class="stat"><b>${r0(n.c)} g</b><span>carbs</span></div><div class="stat"><b>${r0(n.f)} g</b><span>fat</span></div></div>
@@ -426,7 +493,9 @@ function viewRecipe(id) {
   const side = withPair(r)[1];
   html += `<div class="muted" style="margin-top:6px">${side ? `Portions assume it’s served with ${esc(side.name.toLowerCase())}. ` : ''}Cooking ${+total.toFixed(2)} servings in total${r.unit ? ` ≈ ${+(total * r.unit[0]).toFixed(1)} ${esc(r.unit[1])}` : ''}.</div></div>`;
 
-  html += `<h2>Ingredients</h2><div class="card tight"><ul class="list">${scaledIngredients(r, total).map((i) => `<li class="row between"><span>${esc(i.food.name)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ''}</span><b class="nowrap">${esc(i.qty)}</b></li>`).join('')}</ul></div>`;
+  const planned = nextPlannedDate(r.id);
+  const cookDate = planned || addDays(today(), 1);
+  html += `<h2>Ingredients</h2><p class="muted" style="margin-top:-4px">🧺 = prepped ahead (tap for when) · 🛒 = fresh from the grocery list. Timing shown for ${planned ? 'its next planned day' : 'cooking tomorrow'}, ${fmtDate(cookDate)}.</p><div class="card tight">${ingList(r, total, cookDate)}</div>`;
 
   const wk = [...(r.wk || []).map((k) => TASKS[k] && `${TASKS[k].t} <span class="tag">${TASKS[k].m} min</span>`).filter(Boolean), ...(r.wkCustom || []).map((c) => `${esc(c.t)} <span class="tag">${c.m} min</span>`)];
   if (wk.length || r.nt?.length || r.pre?.length) {
@@ -474,6 +543,7 @@ function newDraft(base) {
     steps: (r.steps || []).map((s) => (Array.isArray(s) ? `${s[0]} [${s[1]}]` : s)).join('\n'),
     wk: [...(r.wk || [])],
     wkCustom: (r.wkCustom || []).map((c) => `${c.t} | ${c.m}`).join('\n'),
+    wkMeta: r.wkCustom || [],
     nt: (r.nt || []).join('\n'),
     pre: (r.pre || []).map(([t, m]) => `${m} | ${t}`).join('\n'),
     why: r.why || '', source: r.source,
@@ -541,7 +611,7 @@ function draftToRecipe(d) {
     ing: d.ing.filter((i) => i.name && +i.g > 0).map((i) => (i.f ? { f: i.f, g: +i.g, note: i.note || '' } : { name: i.name, g: +i.g, note: i.note || '', n: { kcal: +i.n?.kcal || 0, p: +i.n?.p || 0, c: +i.n?.c || 0, f: +i.n?.f || 0, fib: 0 } })),
     steps: parseLines(d.steps).map((l) => { const m = l.match(/\[(\d+)\s*(?:min)?\]\s*$/i); return m ? [l.replace(m[0], '').trim(), +m[1]] : l; }),
     wk: d.wk,
-    wkCustom: parseLines(d.wkCustom).map((l) => { const [t, m] = l.split('|').map((x) => x.trim()); return { t, m: +m || 10 }; }),
+    wkCustom: parseLines(d.wkCustom).map((l) => { const [t, m] = l.split('|').map((x) => x.trim()); const meta = (d.wkMeta || []).find((c) => c.t === t) || {}; return { ...meta, t, m: +m || 10 }; }),
     nt: parseLines(d.nt),
     pre: parseLines(d.pre).map((l) => { const [m, ...t] = l.split('|'); return isNaN(+m) ? [l, 10] : [t.join('|').trim(), +m]; }),
     why: d.why, source: d.source, custom: true,
@@ -563,6 +633,7 @@ function viewAI() {
   if (!hasKey) html += `<div class="card warn"><b>Add an API key first.</b><p class="small">Claude runs with your own Anthropic API key (pay-as-you-go, a few rupees per request). Add it under <a href="#/me">Me → Settings</a>.</p></div>`;
   html += `<h2>Suggest recipes</h2><div class="card">
     <label>Meal</label><div class="seg">${MEALS.map(({ k, label }) => `<button class="${a.meal === k ? 'on' : ''}" data-act="ai-set" data-k="meal" data-v="${k}">${label}</button>`).join('')}</div>
+    <label>Type</label><div class="seg">${[['nonveg', '🍗 Non-veg'], ['veg', '🥦 Veg']].map(([k, l]) => `<button class="${a.diet === k ? 'on' : ''}" data-act="ai-set" data-k="diet" data-v="${k}">${l}</button>`).join('')}</div>
     <label>Style</label><div class="chips">${['Any', 'North Indian', 'South Indian', 'Asian', 'Continental'].map((c) => `<button class="chip ${a.cuisine === c ? 'on' : ''}" data-act="ai-set" data-k="cuisine" data-v="${c}">${c}</button>`).join('')}</div>
     <label>Ingredients I have (optional)</label><input data-aifield="have" value="${esc(a.have)}" placeholder="e.g. chicken thighs, spinach, curd">
     <label>Anything else? (optional)</label><input data-aifield="notes" value="${esc(a.notes)}" placeholder="e.g. no coconut, kid-friendly, air fryer">
@@ -690,6 +761,7 @@ function renderSheet() {
   if (s.kind === 'plan-recipe') body = sheetPlanRecipe(s.id);
   if (s.kind === 'share') body = sheetShare(s);
   if (s.kind === 'log') body = sheetLog(s);
+  if (s.kind === 'prep-info') body = sheetPrepInfo(s);
   const scroller = $sheet.querySelector('.sheet');
   const y = scroller?.scrollTop || 0;
   $sheet.innerHTML = `<div class="sheet-bg" data-act="sheet-close"></div><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${body}</div>`;
@@ -804,7 +876,7 @@ const A = {
   portions: (d) => openSheet('portions', { date: d.date, meal: d.meal }),
   'portion-step': (d) => {
     const sl = slot(d.date, d.meal);
-    const cur = portionOf(sl, d.meal, d.pid);
+    const cur = portionOf(sl, d.meal, d.pid, d.date);
     sl.portions = { ...(sl.portions || {}), [d.pid]: Math.max(0, Math.min(4, cur + +d.d)) };
     save(); renderSheet();
   },
@@ -843,6 +915,21 @@ const A = {
     const d = today();
     state.log[d] ||= {}; (state.log[d][s.pid] ||= []).push(e);
     save(); closeSheet(); toast('Logged');
+  },
+  'prep-info': (d) => openSheet('prep-info', { rid: d.rid, f: d.f, date: d.date }),
+  grid: (d) => {
+    const dm = (state.settings.dayMeals ||= defaultDayMeals());
+    dm[d.day][d.meal] = CYCLE[dm[d.day][d.meal] || 'off'];
+    ui.gridOpen = true; save(); render();
+  },
+  'grid-preset': (d) => {
+    const dm = (state.settings.dayMeals ||= defaultDayMeals());
+    for (const i of Object.keys(dm)) {
+      if (d.v === '2s') dm[i] = { b: 'off', l: 'nonveg', s: 'nonveg', d: 'nonveg' };
+      if (d.v === '3s') dm[i] = { b: 'nonveg', l: 'nonveg', s: 'nonveg', d: 'nonveg' };
+      if (d.v === 'allnv') for (const k of ['b', 'l', 's', 'd']) if (dm[i][k] === 'veg') dm[i][k] = 'nonveg';
+    }
+    ui.gridOpen = true; save(); render();
   },
   'extra-del': (d) => { state.extras[d.ws].splice(+d.i, 1); save(); render(); },
   'log-del': (d) => { state.log[today()][d.pid].splice(+d.i, 1); save(); render(); },
@@ -933,6 +1020,8 @@ document.addEventListener('click', (e) => {
   e.preventDefault();
   fn(el.dataset, el, e);
 });
+
+document.addEventListener('toggle', (e) => { if (e.target.dataset?.toggle === 'grid') ui.gridOpen = e.target.open; }, true);
 
 document.addEventListener('input', (e) => {
   const el = e.target;
