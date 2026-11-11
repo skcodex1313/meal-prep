@@ -143,7 +143,7 @@ export function ingredientPrep(r, D) {
   for (const raw of r.ing || []) {
     const i = normIng(raw);
     const food = FOODS[i.f];
-    if (food?.chop && !map.has(i.f)) map.set(i.f, { key: 'chop', def: CHOP_TASK, keeps: food.chop, label: 'pre-chopped', foods: [i.f] });
+    if (food?.chop && !r.noPrep && !map.has(i.f)) map.set(i.f, { key: 'chop', def: CHOP_TASK, keeps: food.chop, label: 'pre-chopped', foods: [i.f] });
   }
   if (D) for (const v of map.values()) v.sched = schedule(v.def, v.keeps, D);
   return map;
@@ -193,7 +193,7 @@ export function groceryList(dates) {
 }
 
 // ───────── Weekend + mid-week prep list ─────────
-const fmtTime = (d, time) => `${DAY[dow(d)]} ${parse(d).getDate()} ${time && time !== 'Sunday prep' ? time : ''}`.trim();
+const fmtTime = (d, time) => `${fmtDate(d).replace(',', '')}${time && time !== 'Sunday prep' ? ' · ' + time : ''}`;
 
 export function prepPlan(dates) {
   const groups = new Map();
@@ -218,13 +218,14 @@ export function prepPlan(dates) {
     for (const t of tasks) {
       const sched = schedule(t.def, t.keeps, it.date);
       const gk = sched.mode === 'midweek' ? `${t.key}@${sched.R}` : t.key;
-      add(gk, { key: t.key, t: t.def.t || t.def.steps[0][2], m: t.def.m || 10, label: t.label }, it, t.foods, ings, sched);
+      const title = t.def.title || (t.def.t.length <= 44 ? t.def.t : t.def.t.slice(0, 42).replace(/\s+\S*$/, '') + '…');
+      add(gk, { key: t.key, title, t: t.def.t || t.def.steps[0][2], m: t.def.m || 10, label: t.label, freezable: !!t.def.freeze }, it, t.foods, ings, sched);
     }
     for (const i of ings) {
-      if (!i.food.chop || covered.has(i.f)) continue;
+      if (!i.food.chop || covered.has(i.f) || r.noPrep) continue;
       const sched = schedule(CHOP_TASK, i.food.chop, it.date);
       const gk = sched.mode === 'midweek' ? `chop@${sched.R}` : 'chop';
-      add(gk, { key: 'chop', t: 'Wash, chop & store veg in airtight boxes lined with paper towel.', m: 0, label: 'pre-chopped' }, it, [i.f], ings, sched);
+      add(gk, { key: 'chop', title: 'Chop vegetables', t: 'Wash, dry and chop; store in airtight boxes lined with paper towel.', m: 0, label: 'pre-chopped' }, it, [i.f], ings, sched);
     }
   }
 
@@ -319,10 +320,15 @@ export function autoFill(dates, { leftoverLunch = true } = {}) {
     return tiers.find((t) => t.length)?.[0] || null;
   };
   const proteinDense = (r) => { const n = perServing(r); return (n.p * 4) / Math.max(1, n.kcal) >= 0.2; };
-  const withSide = (r) => {
+  // Light dishes (a wrap, a soup) only make a full meal with a side; otherwise portions balloon to 2.5×.
+  const mealSized = (r) => perServing(r).kcal >= 300 || r.pair?.length;
+  const withSide = (r, meal) => {
     const ids = [r.id];
     const side = r.pair?.length ? getRecipe(r.pair[0]) : null;
     if (side && (side.cat === 'side' || perServing(r).kcal < 380)) ids.push(side.id);
+    // Lean protein dish with no carbs (tikka, peri-peri, salad bowl): add phulka/rice so the meal
+    // is balanced and portions don't balloon to 400+ g of meat.
+    else if ((meal === 'l' || meal === 'd') && perServing(r).c < 25) ids.push(/Indian/.test(r.cuisine) ? 'phulka' : 'brown_rice');
     return ids;
   };
 
@@ -338,7 +344,7 @@ export function autoFill(dates, { leftoverLunch = true } = {}) {
 
     if (cfg('b') !== 'off') {
       const b = pick((r) => r.meals?.includes('b') && r.cat === 'breakfast', cfg('b'));
-      if (b) put('b', withSide(b));
+      if (b) put('b', withSide(b, 'b'));
     }
 
     if (cfg('l') !== 'off') {
@@ -349,9 +355,9 @@ export function autoFill(dates, { leftoverLunch = true } = {}) {
         && (cfg('l') === 'veg' ? pd.dishes.every((id) => dietOf(getRecipe(id)) === 'veg') : pd.dishes.some((id) => dietOf(getRecipe(id)) !== 'veg'));
       if (work && leftoverLunch && reusable) put('l', [...pd.dishes], { from: prev });
       else {
-        const base = (r) => r.meals?.includes('l') && (r.cat === 'main' || r.cat === 'salad') && (!work || r.lunchbox);
+        const base = (r) => r.meals?.includes('l') && (r.cat === 'main' || r.cat === 'salad') && (!work || r.lunchbox) && mealSized(r);
         const l = pick((r) => base(r) && proteinDense(r), cfg('l')) || pick(base, cfg('l'));
-        if (l) put('l', withSide(l));
+        if (l) put('l', withSide(l, 'l'));
       }
     }
 
@@ -363,9 +369,9 @@ export function autoFill(dates, { leftoverLunch = true } = {}) {
     if (cfg('d') !== 'off') {
       const next = addDays(date, 1);
       const feedsLunch = leftoverLunch && isWorkday(next) && mealSetting(next, 'l') === cfg('d'); // same veg/non-veg choice
-      const base = (r) => r.meals?.includes('d') && r.cat === 'main' && (!feedsLunch || r.lunchbox);
+      const base = (r) => r.meals?.includes('d') && r.cat === 'main' && (!feedsLunch || r.lunchbox) && mealSized(r);
       const dn = pick((r) => base(r) && proteinDense(r), cfg('d')) || pick(base, cfg('d'));
-      if (dn) put('d', withSide(dn));
+      if (dn) put('d', withSide(dn, 'd'));
     }
   }
 }

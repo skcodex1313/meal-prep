@@ -158,6 +158,7 @@ const ROWS = [
   ['bay_leaf', 'Bay leaf', 'spice', 313, 7.6, 75, 8.4, 26, { pc: [0.2, 'leaf'], pantry: true }],
   ['oregano', 'Oregano / mixed herbs', 'spice', 265, 9, 69, 4.3, 42.5, S(3)],
   ['chilli_flakes', 'Chilli flakes', 'spice', 318, 12, 57, 17, 27, S(5)],
+  ['fruit_salt', 'Fruit salt (Eno)', 'spice', 0, 0, 0, 0, 0, S(10)],
 ];
 
 export const FOODS = {};
